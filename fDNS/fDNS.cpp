@@ -4,9 +4,9 @@
 //
 //  Author: Sotiris Karagiannis
 //
-// 	v0.1 simple fDNS_Resolve(hostname) function that returns the ip of hostname based on the DNS Lookup
+// 	v0.2 fDNS_Resolve(hostname), fDNS_Reverse(ipAddress) and fDNS_Get_Server()
 //
-//
+
 
 #include "FMWrapper/FMXTypes.h"
 #include "FMWrapper/FMXText.h"
@@ -16,6 +16,7 @@
 
 #include <netdb.h>
 #include <ares.h>
+#include <vector>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/select.h>
@@ -27,11 +28,65 @@
 std::string getString(const fmx::Text& text);
 
 // A function to convert fmx::Text to std::string (with a 512-byte buffer limit)
+//
 std::string getString(const fmx::Text& Text)
 {
 	char buffer[512] = {0}; // NOTE: string size limit
 	Text.GetBytes(buffer, sizeof(buffer) - 1, 0, Text.GetSize(), fmx::Text::kEncoding_Native);
 	return std::string(buffer);
+}
+
+// Simple DNS Get Server Function ====================================================================
+
+static FMX_PROC(fmx::errcode) DNS_Get_Server(short /*funcId*/, const fmx::ExprEnv& /*env*/, const fmx::DataVect& /*dataVect*/, fmx::Data& results)
+{
+	if (ares_library_init(ARES_LIB_INIT_ALL) != ARES_SUCCESS)
+		return 1;
+
+	ares_channel channel;
+	if (ares_init(&channel) != ARES_SUCCESS)
+	{
+		ares_library_cleanup();
+		return 1;
+	}
+
+	struct ares_addr_node* servers = nullptr;
+	std::string serverList;
+
+	if (ares_get_servers(channel, &servers) == ARES_SUCCESS)
+	{
+		char ip[INET6_ADDRSTRLEN];
+
+		for (struct ares_addr_node* node = servers; node != nullptr; node = node->next)
+		{
+			memset(ip, 0, sizeof(ip));
+			if (node->family == AF_INET)
+			{
+				inet_ntop(AF_INET, &node->addr.addr4, ip, sizeof(ip));
+			}
+			else if (node->family == AF_INET6)
+			{
+				inet_ntop(AF_INET6, &node->addr.addr6, ip, sizeof(ip));
+			}
+			if (!serverList.empty())
+				serverList += ", ";
+			serverList += ip;
+		}
+		ares_free_data(servers);
+	}
+	else
+	{
+		serverList = "?";  // could not fetch
+	}
+
+	ares_destroy(channel);
+	ares_library_cleanup();
+
+	fmx::TextUniquePtr outText;
+	outText->Assign(serverList.c_str(), fmx::Text::kEncoding_UTF8);
+	results.SetAsText(*outText, results.GetLocale());
+
+	return 0;
 }
 
 // Simple DNS Resolve Function ====================================================================
@@ -110,14 +165,63 @@ static FMX_PROC(fmx::errcode) Do_DNS_Resolve(short /*funcId*/, const fmx::ExprEn
 
 	return 0; // Success
 }
+
+// Simple DNS Reverse Function ====================================================================
+
+static FMX_PROC(fmx::errcode) Do_DNS_Reverse(short /*funcId*/, const fmx::ExprEnv& /*env*/, const fmx::DataVect& dataVect, fmx::Data& results)
+{
+	if (dataVect.Size() == 0) return 956; // Parameter missing
+
+	const fmx::Data& inputData = dataVect.At(0);
+	const fmx::Text& inputText = inputData.GetAsText();
+	std::string ipAddress = getString(inputText);
+
+	if (ipAddress.empty())
+		return 956; // Invalid IP
+
+	struct sockaddr_in sa;
+	memset(&sa, 0, sizeof(sa));
+	sa.sin_family = AF_INET;
+
+	if (inet_pton(AF_INET, ipAddress.c_str(), &sa.sin_addr) != 1)
+		return 956; // Not a valid IPv4 address
+
+	char host[NI_MAXHOST];
+	std::string resolvedHost = "?";
+
+	if (getnameinfo((struct sockaddr*)&sa, sizeof(sa), host, sizeof(host), nullptr, 0, NI_NAMEREQD) == 0)
+	{
+		resolvedHost = host;
+	}
+
+	fmx::TextUniquePtr outText;
+	outText->Assign(resolvedHost.c_str(), fmx::Text::kEncoding_UTF8);
+	results.SetAsText(*outText, inputData.GetLocale());
+
+	return 0;
+}
+
 // Registration Info =======================================================================
 
 static const char* kfDNS = "fDNS";
 
-enum { kfDNS_DNSResolveID = 300, kfDNS_DNSResolveMin = 1, kfDNS_DNSResolveMax = 1 };
+enum {
+	kfDNS_DNSResolveID = 300,
+	kfDNS_DNSGetServerID = 301,
+	kfDNS_DNSReverseID = 302
+};
+
 static const char* kfDNS_DNSResolveName = "fDNS_Resolve";
 static const char* kfDNS_DNSResolveDefinition = "fDNS_Resolve(hostname)";
 static const char* kfDNS_DNSResolveDescription = "Resolves a hostname to an IPv4 address";
+
+static const char* kfDNS_DNSGetServerName = "fDNS_Get_Server";
+static const char* kfDNS_DNSGetServerDefinition = "fDNS_Get_Server";
+static const char* kfDNS_DNSGetServerDescription = "Returns the system's DNS server address";
+
+static const char* kfDNS_DNSReverseName = "fDNS_Reverse";
+static const char* kfDNS_DNSReverseDefinition = "fDNS_Reverse(ipAddress)";
+static const char* kfDNS_DNSReverseDescription = "Resolves an IP address to a hostname using reverse DNS lookup";
 
 // Plugin Initialization ===================================================================
 
@@ -130,25 +234,56 @@ static fmx::ptrtype Do_PluginInit(fmx::int16 version)
 	fmx::TextUniquePtr description;
 	fmx::uint32 flags = fmx::ExprEnv::kDisplayInAllDialogs | fmx::ExprEnv::kFutureCompatible;
 
+	bool dnsResolveRegistered = false;
+	bool dnsGetServerRegistered = false;
+	bool dnsReverseRegistered = false;
+
 	if (version >= k150ExtnVersion)
 	{
+		// fDNS_Resolve
 		name->Assign(kfDNS_DNSResolveName, fmx::Text::kEncoding_UTF8);
 		definition->Assign(kfDNS_DNSResolveDefinition, fmx::Text::kEncoding_UTF8);
 		description->Assign(kfDNS_DNSResolveDescription, fmx::Text::kEncoding_UTF8);
+		dnsResolveRegistered = (fmx::ExprEnv::RegisterExternalFunctionEx(*pluginID, kfDNS_DNSResolveID, *name, *definition, *description,
+			1, 1, flags, Do_DNS_Resolve) == 0);
 
-		if (fmx::ExprEnv::RegisterExternalFunctionEx(*pluginID, kfDNS_DNSResolveID, *name, *definition, *description,
-			kfDNS_DNSResolveMin, kfDNS_DNSResolveMax, flags, Do_DNS_Resolve) == 0)
-			result = kCurrentExtnVersion;
+		// fDNS_Get_Server
+		name->Assign(kfDNS_DNSGetServerName, fmx::Text::kEncoding_UTF8);
+		definition->Assign(kfDNS_DNSGetServerDefinition, fmx::Text::kEncoding_UTF8);
+		description->Assign(kfDNS_DNSGetServerDescription, fmx::Text::kEncoding_UTF8);
+		dnsGetServerRegistered = (fmx::ExprEnv::RegisterExternalFunctionEx(*pluginID, kfDNS_DNSGetServerID, *name, *definition, *description,
+			0, 0, flags, DNS_Get_Server) == 0);
+
+		// fDNS_Reverse
+		name->Assign(kfDNS_DNSReverseName, fmx::Text::kEncoding_UTF8);
+		definition->Assign(kfDNS_DNSReverseDefinition, fmx::Text::kEncoding_UTF8);
+		description->Assign(kfDNS_DNSReverseDescription, fmx::Text::kEncoding_UTF8);
+		dnsReverseRegistered = (fmx::ExprEnv::RegisterExternalFunctionEx(*pluginID, kfDNS_DNSReverseID, *name, *definition, *description,
+			1, 1, flags, Do_DNS_Reverse) == 0);
 	}
 	else if (version == k140ExtnVersion)
 	{
+		// fDNS_Resolve
 		name->Assign(kfDNS_DNSResolveName, fmx::Text::kEncoding_UTF8);
 		definition->Assign(kfDNS_DNSResolveDefinition, fmx::Text::kEncoding_UTF8);
+		dnsResolveRegistered = (fmx::ExprEnv::RegisterExternalFunction(*pluginID, kfDNS_DNSResolveID, *name, *definition,
+			1, 1, flags, Do_DNS_Resolve) == 0);
 
-		if (fmx::ExprEnv::RegisterExternalFunction(*pluginID, kfDNS_DNSResolveID, *name, *definition,
-			kfDNS_DNSResolveMin, kfDNS_DNSResolveMax, flags, Do_DNS_Resolve) == 0)
-			result = kCurrentExtnVersion;
+		// fDNS_Get_Server
+		name->Assign(kfDNS_DNSGetServerName, fmx::Text::kEncoding_UTF8);
+		definition->Assign(kfDNS_DNSGetServerDefinition, fmx::Text::kEncoding_UTF8);
+		dnsGetServerRegistered = (fmx::ExprEnv::RegisterExternalFunction(*pluginID, kfDNS_DNSGetServerID, *name, *definition,
+			0, 0, flags, DNS_Get_Server) == 0);
+
+		// fDNS_Reverse
+		name->Assign(kfDNS_DNSReverseName, fmx::Text::kEncoding_UTF8);
+		definition->Assign(kfDNS_DNSReverseDefinition, fmx::Text::kEncoding_UTF8);
+		dnsReverseRegistered = (fmx::ExprEnv::RegisterExternalFunction(*pluginID, kfDNS_DNSReverseID, *name, *definition,
+			1, 1, flags, Do_DNS_Reverse) == 0);
 	}
+
+	if (dnsResolveRegistered && dnsGetServerRegistered && dnsReverseRegistered)
+		result = kCurrentExtnVersion;
 
 	return result;
 }
@@ -158,8 +293,13 @@ static fmx::ptrtype Do_PluginInit(fmx::int16 version)
 static void Do_PluginShutdown(fmx::int16 version)
 {
 	const fmx::QuadCharUniquePtr pluginID(kfDNS[0], kfDNS[1], kfDNS[2], kfDNS[3]);
+
 	if (version >= k140ExtnVersion)
+	{
 		fmx::ExprEnv::UnRegisterExternalFunction(*pluginID, kfDNS_DNSResolveID);
+		fmx::ExprEnv::UnRegisterExternalFunction(*pluginID, kfDNS_DNSGetServerID);
+		fmx::ExprEnv::UnRegisterExternalFunction(*pluginID, kfDNS_DNSReverseID);
+	}
 }
 
 // Get String Handler ======================================================================
