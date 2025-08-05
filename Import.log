@@ -1,0 +1,19 @@
+﻿Timestamp	Filename	Error	Message
+2025-08-05 12:15:15.591 +0300	fDNS_DemoFile.fmp12	0	Import of script steps from clipboard started
+2025-08-05 12:15:15.593 +0300	Demo script	0	script steps imported : 4
+2025-08-05 12:15:15.594 +0300	fDNS_DemoFile.fmp12	0	Import completed
+2025-08-05 12:37:46.125 +0300	fDNS_DemoFile.fmp12	0	Import of script steps from clipboard started
+2025-08-05 12:37:46.134 +0300	DNS Lookup	0	script steps imported : 4
+2025-08-05 12:37:46.134 +0300	fDNS_DemoFile.fmp12	0	Import completed
+2025-08-05 12:40:24.023 +0300	fDNS_DemoFile.fmp12	0	Import of script steps from clipboard started
+2025-08-05 12:40:24.025 +0300	DNS Lookup	0	script steps imported : 2
+2025-08-05 12:40:24.025 +0300	fDNS_DemoFile.fmp12	0	Import completed
+2025-08-05 12:46:47.536 +0300	fDNS_DemoFile.fmp12	0	Import of script steps from clipboard started
+2025-08-05 12:46:47.537 +0300	Reverse DNS	0	script steps imported : 1
+2025-08-05 12:46:47.537 +0300	fDNS_DemoFile.fmp12	0	Import completed
+2025-08-05 12:46:59.573 +0300	fDNS_DemoFile.fmp12	0	Import of script steps from clipboard started
+2025-08-05 12:46:59.575 +0300	Reverse DNS	0	script steps imported : 1
+2025-08-05 12:46:59.575 +0300	fDNS_DemoFile.fmp12	0	Import completed
+2025-08-05 12:47:10.633 +0300	fDNS_DemoFile.fmp12	0	Import of script steps from clipboard started
+2025-08-05 12:47:10.634 +0300	DNS Lookup	0	script steps imported : 1
+2025-08-05 12:47:10.634 +0300	fDNS_DemoFile.fmp12	0	Import completed
