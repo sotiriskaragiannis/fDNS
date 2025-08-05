@@ -17,11 +17,11 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.5</string>
 	<key>CFBundleSignature</key>
-	<string>FMmp</string>
+	<string>fDNS</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>Copyright © 2024 Claris International Inc. All rights reserved.</string>
+	<string>Copyright © 2025 Sotirios Karagiannis. All rights reserved.</string>
 	<key>NSPrincipalClass</key>
 	<string></string>
 </dict>

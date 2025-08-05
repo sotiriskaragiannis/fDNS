@@ -18,6 +18,7 @@
 		6FFC39E91D49571000806C66 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		6FFC3A0A1D49764900806C66 /* fDNSIOS.fmplugin */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = fDNSIOS.fmplugin; sourceTree = BUILT_PRODUCTS_DIR; };
 		6FFC3A331D49972700806C66 /* FMWrapper */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FMWrapper; path = ../Headers/FMWrapper; sourceTree = "<group>"; };
+		89090C812E423AC600B669E2 /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -49,6 +50,7 @@
 		6FFC39DA1D49571000806C66 = {
 			isa = PBXGroup;
 			children = (
+				89090C812E423AC600B669E2 /* .gitignore */,
 				6FFC3A331D49972700806C66 /* FMWrapper */,
 				6FFC39E61D49571000806C66 /* fDNS */,
 				6FFC39E51D49571000806C66 /* Products */,
