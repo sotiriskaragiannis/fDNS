@@ -4,8 +4,9 @@
 //
 //  Author: Sotiris Karagiannis
 //
-// 	v0.4 fDNS_Resolve(hostname {; dnsServer}), fDNS_Reverse(ipAddress {; dnsServer}) and fDNS_Get_Default_Server()
-// 			with 3 seconds timeout for the dns requests in fDNS_Resolve and fDNS_Reverse.
+// 	v0.5 fDNS_Resolve(hostname {; dnsServer ; timeoutMs}), fDNS_Reverse(ipAddress {; dnsServer ; timeoutMs}) and fDNS_Get_Default_Server().
+// 			- 3 seconds is the default timeout for the dns requests in DNS_Resolve and DNS_Reverse.
+//			- if dnsServer is not specified or is empty (“”) the the default dns server is used
 //
 
 #include "FMWrapper/FMXTypes.h"
@@ -25,7 +26,10 @@
 #include <string>
 #include <cstring>
 
+#define DEFAULT_TIMEOUT 3000
+
 std::string getString(const fmx::Text& text);
+int GetIntFromDataVect(const fmx::DataVect& dataVect, fmx::uint32 position);
 
 // A function to convert fmx::Text to std::string (with a 512-byte buffer limit)
 std::string getString(const fmx::Text& Text)
@@ -33,6 +37,10 @@ std::string getString(const fmx::Text& Text)
 	char buffer[512] = {0}; // NOTE: string size limit
 	Text.GetBytes(buffer, sizeof(buffer) - 1, 0, Text.GetSize(), fmx::Text::kEncoding_Native);
 	return std::string(buffer);
+}
+
+int GetIntFromDataVect(const fmx::DataVect& dataVect, fmx::uint32 position) {
+	return static_cast<int>(dataVect.AtAsNumber(position).AsLong());
 }
 
 // Simple DNS Get Server Function ====================================================================
@@ -88,7 +96,7 @@ static FMX_PROC(fmx::errcode) DNS_Get_Default_Server(short /*funcId*/, const fmx
 	return 0;
 }
 
-// Simple DNS Resolve Function ====================================================================
+// fDNS_Resolve now: fDNS_Resolve(hostname {; dnsServer} {; timeoutMs})
 
 static FMX_PROC(fmx::errcode) Do_DNS_Resolve(short /*funcId*/, const fmx::ExprEnv& /*env*/, const fmx::DataVect& dataVect, fmx::Data& results)
 {
@@ -100,8 +108,17 @@ static FMX_PROC(fmx::errcode) Do_DNS_Resolve(short /*funcId*/, const fmx::ExprEn
 		return 956;
 
 	std::string dnsServer;
+	int timeoutMs = DEFAULT_TIMEOUT; // default timeout
+
 	if (dataVect.Size() > 1)
 		dnsServer = getString(dataVect.At(1).GetAsText());
+
+	if (dataVect.Size() > 2)
+	{
+		// parse timeout argument (milliseconds)
+		timeoutMs = GetIntFromDataVect(dataVect, 2);
+		if (timeoutMs < 0) timeoutMs = DEFAULT_TIMEOUT; // fallback to default if negative
+	}
 
 	if (ares_library_init(ARES_LIB_INIT_ALL) != ARES_SUCCESS)
 		return 1;
@@ -110,6 +127,7 @@ static FMX_PROC(fmx::errcode) Do_DNS_Resolve(short /*funcId*/, const fmx::ExprEn
 	struct ares_options options;
 	int optmask = 0;
 
+	// If dnsServer is not empty, use the specified DNS server(s)
 	if (!dnsServer.empty())
 	{
 		memset(&options, 0, sizeof(options));
@@ -127,6 +145,7 @@ static FMX_PROC(fmx::errcode) Do_DNS_Resolve(short /*funcId*/, const fmx::ExprEn
 	}
 	else
 	{
+		// If dnsServer is empty, use the system's default DNS servers
 		if (ares_init(&channel) != ARES_SUCCESS)
 		{
 			ares_library_cleanup();
@@ -157,9 +176,8 @@ static FMX_PROC(fmx::errcode) Do_DNS_Resolve(short /*funcId*/, const fmx::ExprEn
 	ares_gethostbyname(channel, hostname.c_str(), AF_INET, callback, &callbackData);
 
 	int totalWaitMs = 0;
-	const int maxWaitMs = 3000;  // max 3 seconds
 
-	while (!callbackData.done && totalWaitMs < maxWaitMs)
+	while (!callbackData.done && totalWaitMs < timeoutMs)
 	{
 		fd_set read_fds, write_fds;
 		int nfds;
@@ -174,7 +192,12 @@ static FMX_PROC(fmx::errcode) Do_DNS_Resolve(short /*funcId*/, const fmx::ExprEn
 		tvp = ares_timeout(channel, nullptr, &tv);
 
 		int waitMs = (tvp->tv_sec * 1000) + (tvp->tv_usec / 1000);
-		int waited = select(nfds, &read_fds, &write_fds, nullptr, tvp);
+		if (waitMs > (timeoutMs - totalWaitMs))
+			waitMs = timeoutMs - totalWaitMs;
+
+		struct timeval tv_limit = { waitMs / 1000, (waitMs % 1000) * 1000 };
+
+		int waited = select(nfds, &read_fds, &write_fds, nullptr, &tv_limit);
 		if (waited >= 0)
 		{
 			ares_process(channel, &read_fds, &write_fds);
@@ -198,7 +221,9 @@ static FMX_PROC(fmx::errcode) Do_DNS_Resolve(short /*funcId*/, const fmx::ExprEn
 
 	return 0;
 }
-// Simple DNS Reverse Function ====================================================================
+
+
+// fDNS_Reverse now: fDNS_Reverse(ipAddress {; dnsServer} {; timeoutMs})
 
 static FMX_PROC(fmx::errcode) Do_DNS_Reverse(short /*funcId*/, const fmx::ExprEnv& /*env*/, const fmx::DataVect& dataVect, fmx::Data& results)
 {
@@ -208,8 +233,16 @@ static FMX_PROC(fmx::errcode) Do_DNS_Reverse(short /*funcId*/, const fmx::ExprEn
 	if (ipAddress.empty()) return 956;
 
 	std::string dnsServer;
+	int timeoutMs = DEFAULT_TIMEOUT; // default timeout
+
 	if (dataVect.Size() > 1)
 		dnsServer = getString(dataVect.At(1).GetAsText());
+
+	if (dataVect.Size() > 2)
+	{
+		timeoutMs = GetIntFromDataVect(dataVect, 2);
+		if (timeoutMs < 0) timeoutMs = DEFAULT_TIMEOUT; // fallback to default
+	}
 
 	if (ares_library_init(ARES_LIB_INIT_ALL) != ARES_SUCCESS)
 		return 1;
@@ -218,6 +251,7 @@ static FMX_PROC(fmx::errcode) Do_DNS_Reverse(short /*funcId*/, const fmx::ExprEn
 	struct ares_options options;
 	int optmask = 0;
 
+	// If dnsServer is not empty, use the specified DNS server(s)
 	if (!dnsServer.empty())
 	{
 		memset(&options, 0, sizeof(options));
@@ -235,6 +269,7 @@ static FMX_PROC(fmx::errcode) Do_DNS_Reverse(short /*funcId*/, const fmx::ExprEn
 	}
 	else
 	{
+		// If dnsServer is empty, use the system's default DNS servers
 		if (ares_init(&channel) != ARES_SUCCESS)
 		{
 			ares_library_cleanup();
@@ -270,9 +305,8 @@ static FMX_PROC(fmx::errcode) Do_DNS_Reverse(short /*funcId*/, const fmx::ExprEn
 	ares_gethostbyaddr(channel, &sa.sin_addr, sizeof(sa.sin_addr), AF_INET, callback, &callbackData);
 
 	int totalWaitMs = 0;
-	const int maxWaitMs = 3000;  // max 3 seconds
 
-	while (!callbackData.done && totalWaitMs < maxWaitMs)
+	while (!callbackData.done && totalWaitMs < timeoutMs)
 	{
 		fd_set read_fds, write_fds;
 		int nfds;
@@ -287,7 +321,12 @@ static FMX_PROC(fmx::errcode) Do_DNS_Reverse(short /*funcId*/, const fmx::ExprEn
 		tvp = ares_timeout(channel, nullptr, &tv);
 
 		int waitMs = (tvp->tv_sec * 1000) + (tvp->tv_usec / 1000);
-		int waited = select(nfds, &read_fds, &write_fds, nullptr, tvp);
+		if (waitMs > (timeoutMs - totalWaitMs))
+			waitMs = timeoutMs - totalWaitMs;
+
+		struct timeval tv_limit = { waitMs / 1000, (waitMs % 1000) * 1000 };
+
+		int waited = select(nfds, &read_fds, &write_fds, nullptr, &tv_limit);
 		if (waited >= 0)
 		{
 			ares_process(channel, &read_fds, &write_fds);
@@ -311,7 +350,6 @@ static FMX_PROC(fmx::errcode) Do_DNS_Reverse(short /*funcId*/, const fmx::ExprEn
 
 	return 0;
 }
-
 // Registration Info =======================================================================
 
 static const char* kfDNS = "fDNS";
@@ -323,7 +361,7 @@ enum {
 };
 
 static const char* kfDNS_DNSResolveName = "fDNS_Resolve";
-static const char* kfDNS_DNSResolveDefinition = "fDNS_Resolve(hostname {; dnsServer})";
+static const char* kfDNS_DNSResolveDefinition = "fDNS_Resolve(hostname {; dnsServer} {; timeoutMs})";
 static const char* kfDNS_DNSResolveDescription = "Resolves a hostname to an IPv4 address";
 
 static const char* kfDNS_DNSGetServerName = "fDNS_Get_Default_Server";
@@ -331,7 +369,7 @@ static const char* kfDNS_DNSGetServerDefinition = "fDNS_Get_Default_Server";
 static const char* kfDNS_DNSGetServerDescription = "Returns the system's DNS server address";
 
 static const char* kfDNS_DNSReverseName = "fDNS_Reverse";
-static const char* kfDNS_DNSReverseDefinition = "fDNS_Reverse(ipAddress {; dnsServer})";
+static const char* kfDNS_DNSReverseDefinition = "fDNS_Reverse(ipAddress {; dnsServer} {; timeoutMs})";
 static const char* kfDNS_DNSReverseDescription = "Resolves an IP address to a hostname using reverse DNS lookup";
 
 // Plugin Initialization ===================================================================
@@ -351,46 +389,46 @@ static fmx::ptrtype Do_PluginInit(fmx::int16 version)
 
 	if (version >= k150ExtnVersion)
 	{
-		// fDNS_Resolve
+		// DNS_Resolve
 		name->Assign(kfDNS_DNSResolveName, fmx::Text::kEncoding_UTF8);
 		definition->Assign(kfDNS_DNSResolveDefinition, fmx::Text::kEncoding_UTF8);
 		description->Assign(kfDNS_DNSResolveDescription, fmx::Text::kEncoding_UTF8);
 		dnsResolveRegistered = (fmx::ExprEnv::RegisterExternalFunctionEx(*pluginID, kfDNS_DNSResolveID, *name, *definition, *description,
-			1, 2, flags, Do_DNS_Resolve) == 0);
+			1, 3, flags, Do_DNS_Resolve) == 0);
 
-		// fDNS_Get_Default_Server
+		// DNS_Get_Default_Server
 		name->Assign(kfDNS_DNSGetServerName, fmx::Text::kEncoding_UTF8);
 		definition->Assign(kfDNS_DNSGetServerDefinition, fmx::Text::kEncoding_UTF8);
 		description->Assign(kfDNS_DNSGetServerDescription, fmx::Text::kEncoding_UTF8);
 		dnsGetServerRegistered = (fmx::ExprEnv::RegisterExternalFunctionEx(*pluginID, kfDNS_DNSGetServerID, *name, *definition, *description,
 			0, 0, flags, DNS_Get_Default_Server) == 0);
 
-		// fDNS_Reverse
+		// DNS_Reverse
 		name->Assign(kfDNS_DNSReverseName, fmx::Text::kEncoding_UTF8);
 		definition->Assign(kfDNS_DNSReverseDefinition, fmx::Text::kEncoding_UTF8);
 		description->Assign(kfDNS_DNSReverseDescription, fmx::Text::kEncoding_UTF8);
 		dnsReverseRegistered = (fmx::ExprEnv::RegisterExternalFunctionEx(*pluginID, kfDNS_DNSReverseID, *name, *definition, *description,
-			1, 2, flags, Do_DNS_Reverse) == 0);
+			1, 3, flags, Do_DNS_Reverse) == 0);
 	}
 	else if (version == k140ExtnVersion)
 	{
-		// fDNS_Resolve
+		// DNS_Resolve
 		name->Assign(kfDNS_DNSResolveName, fmx::Text::kEncoding_UTF8);
 		definition->Assign(kfDNS_DNSResolveDefinition, fmx::Text::kEncoding_UTF8);
 		dnsResolveRegistered = (fmx::ExprEnv::RegisterExternalFunction(*pluginID, kfDNS_DNSResolveID, *name, *definition,
-			1, 2, flags, Do_DNS_Resolve) == 0);
+			1, 3, flags, Do_DNS_Resolve) == 0);
 
-		// fDNS_Get_Default_Server
+		// DNS_Get_Default_Server
 		name->Assign(kfDNS_DNSGetServerName, fmx::Text::kEncoding_UTF8);
 		definition->Assign(kfDNS_DNSGetServerDefinition, fmx::Text::kEncoding_UTF8);
 		dnsGetServerRegistered = (fmx::ExprEnv::RegisterExternalFunction(*pluginID, kfDNS_DNSGetServerID, *name, *definition,
 			0, 0, flags, DNS_Get_Default_Server) == 0);
 
-		// fDNS_Reverse
+		// DNS_Reverse
 		name->Assign(kfDNS_DNSReverseName, fmx::Text::kEncoding_UTF8);
 		definition->Assign(kfDNS_DNSReverseDefinition, fmx::Text::kEncoding_UTF8);
 		dnsReverseRegistered = (fmx::ExprEnv::RegisterExternalFunction(*pluginID, kfDNS_DNSReverseID, *name, *definition,
-			1, 2, flags, Do_DNS_Reverse) == 0);
+			1, 3, flags, Do_DNS_Reverse) == 0);
 	}
 
 	if (dnsResolveRegistered && dnsGetServerRegistered && dnsReverseRegistered)
