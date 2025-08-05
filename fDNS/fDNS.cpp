@@ -4,7 +4,7 @@
 //
 //  Author: Sotiris Karagiannis
 //
-// 	v0.60
+//  v0.61
 
 #include "FMWrapper/FMXTypes.h"
 #include "FMWrapper/FMXText.h"
@@ -33,6 +33,7 @@ int GetIntFromDataVect(const fmx::DataVect& dataVect, fmx::uint32 position);
 static std::string g_currentDnsServer; // empty = system default
 static bool g_dnsInitialized = false;
 static std::mutex g_dnsMutex;
+static ares_channel g_channel = nullptr;
 
 // A function to convert fmx::Text to std::string (with a 512-byte buffer limit)
 std::string getString(const fmx::Text& Text)
@@ -48,7 +49,7 @@ int GetIntFromDataVect(const fmx::DataVect& dataVect, fmx::uint32 position) {
 
 // DNS State Management ====================================================================
 
-static fmx::errcode fDNS_Initialize()
+static fmx::errcode DNS_Initialize()
 {
 	std::lock_guard<std::mutex> lock(g_dnsMutex);
 	if (!g_dnsInitialized) {
@@ -57,12 +58,36 @@ static fmx::errcode fDNS_Initialize()
 		g_currentDnsServer.clear(); // use system default
 		g_dnsInitialized = true;
 	}
+	// (Re)create the channel for the current DNS server (should be default at init)
+	if (g_channel) {
+		ares_destroy(g_channel);
+		g_channel = nullptr;
+	}
+	if (g_currentDnsServer.empty()) {
+		if (ares_init(&g_channel) != ARES_SUCCESS)
+			return 1;
+	} else {
+		struct ares_options options;
+		memset(&options, 0, sizeof(options));
+		int optmask = 0;
+		if (ares_init_options(&g_channel, &options, optmask) != ARES_SUCCESS)
+			return 1;
+		if (ares_set_servers_ports_csv(g_channel, g_currentDnsServer.c_str()) != ARES_SUCCESS) {
+			ares_destroy(g_channel);
+			g_channel = nullptr;
+			return 1;
+		}
+	}
 	return 0;
 }
 
-static fmx::errcode fDNS_Uninitialize()
+static fmx::errcode DNS_Uninitialize()
 {
 	std::lock_guard<std::mutex> lock(g_dnsMutex);
+	if (g_channel) {
+		ares_destroy(g_channel);
+		g_channel = nullptr;
+	}
 	if (g_dnsInitialized) {
 		ares_library_cleanup();
 		g_dnsInitialized = false;
@@ -71,22 +96,42 @@ static fmx::errcode fDNS_Uninitialize()
 	return 0;
 }
 
-static fmx::errcode fDNS_Set_Server(const std::string& dnsServer)
+static fmx::errcode DNS_Set_Server(const std::string& dnsServer)
 {
 	std::lock_guard<std::mutex> lock(g_dnsMutex);
 	if (!g_dnsInitialized)
 		return 1;
 	g_currentDnsServer = dnsServer;
+	// Recreate the channel with the new server
+	if (g_channel) {
+		ares_destroy(g_channel);
+		g_channel = nullptr;
+	}
+	if (g_currentDnsServer.empty()) {
+		if (ares_init(&g_channel) != ARES_SUCCESS)
+			return 1;
+	} else {
+		struct ares_options options;
+		memset(&options, 0, sizeof(options));
+		int optmask = 0;
+		if (ares_init_options(&g_channel, &options, optmask) != ARES_SUCCESS)
+			return 1;
+		if (ares_set_servers_ports_csv(g_channel, g_currentDnsServer.c_str()) != ARES_SUCCESS) {
+			ares_destroy(g_channel);
+			g_channel = nullptr;
+			return 1;
+		}
+	}
 	return 0;
 }
 
-static std::string fDNS_Get_Current_Server()
+static std::string DNS_Get_Current_Server()
 {
 	std::lock_guard<std::mutex> lock(g_dnsMutex);
 	return g_currentDnsServer;
 }
 
-static std::string fDNS_Get_Systems_Server()
+static std::string DNS_Get_Systems_Server()
 {
 	std::string serverList;
 	ares_channel channel;
@@ -226,7 +271,7 @@ static FMX_PROC(fmx::errcode) DNS_Resolve(short /*funcId*/, const fmx::ExprEnv& 
 	if (!callbackData.done)
 		callbackData.ip = "?";  // Timed out
 
-	ares_destroy(channel);
+	// Do NOT destroy the channel here; it's persistent
 
 	fmx::TextUniquePtr outText;
 	outText->Assign(callbackData.ip.c_str(), fmx::Text::kEncoding_UTF8);
@@ -346,7 +391,7 @@ static FMX_PROC(fmx::errcode) DNS_Reverse(short /*funcId*/, const fmx::ExprEnv& 
 	if (!callbackData.done)
 		callbackData.hostname = "?";  // Timed out
 
-	ares_destroy(channel);
+	// Do NOT destroy the channel here; it's persistent
 
 	fmx::TextUniquePtr outText;
 	outText->Assign(callbackData.hostname.c_str(), fmx::Text::kEncoding_UTF8);
