@@ -37,14 +37,16 @@ A cross-platform DNS plugin for FileMaker Pro, providing DNS resolution and reve
 
 ## Installation
 
-1. **Download plugin from Releases**
+1. **Download Plugin from Releases**
 Download the plugin from the latest release
 
-2. **Deploy the Plugin**
+2. **Unzip the Plugin file**
+
+3. **Deploy the Plugin**
    Copy the `.fmplugin` bundle to your FileMaker Extensions folder:
    ~/Library/Application Support/FileMaker/Extensions/
 
-3. **Restart FileMaker Pro**
+4. **Restart FileMaker Pro**
    The plugin should be detected and loaded automatically.
 
 ## Usage
