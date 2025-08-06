@@ -641,7 +641,7 @@ static void Do_GetString(fmx::uint32 whichString, fmx::uint32 /*winLangID*/, fmx
 			outBuffer[11] = 0;
 			break;
 		case kFMXT_HelpURLStr:
-			CopyUTF8StrToUnichar16Str("https://example.com/help", outBufferSize, outBuffer);
+			CopyUTF8StrToUnichar16Str("https://github.com/sotiriskaragiannis/fDNS", outBufferSize, outBuffer);
 			break;
 		default:
 			outBuffer[0] = 0;
