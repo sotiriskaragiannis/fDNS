@@ -63,7 +63,7 @@ Call the plugin functions from FileMaker calculations or scripts. See the `fDNS_
 fDNS_Resolve_Extended("example.com"; 3000)
 ```
 
-Returns a JSON string with all DNS records for the hostname.  
+Returns a JSON string with all DNS records for the hostname.
 If there are multiple records of the same type (e.g. multiple A or MX records), each will appear as a separate object in the "records" array. For example:
 
 ```json
@@ -81,6 +81,51 @@ If there are multiple records of the same type (e.g. multiple A or MX records), 
 }
 ```
 
+## Notes for compilation
+These sources contain only the Xcode project file for the macOS version. For compilation, you also need to download FileMaker SDK
+The files structure with the Filemaker plugin frameworks file can look like this:
+```
+PlugInSDK
+├── Headers
+│  └── FMWrapper
+│      ├── FMXBinaryData.h
+│      ├── FMXCalcEngine.h
+│      ├── FMXClient.h
+│      ├── FMXData.h
+│      ├── FMXDateTime.h
+│      ├── FMXExtern.h
+│      ├── FMXFixPt.h
+│      ├── FMXText.h
+│      ├── FMXTextStyle.h
+│      └── FMXTypes.h
+├── Libraries
+│  ├── Linux
+│  │  …
+│  ├── Mac
+│  │  └── FMWrapper.framework
+│  │      …
+│  ├── Win
+│  │  …
+│  ├── iphoneos
+│  │  …
+│  └── iphonesimulator
+│      …
+├── README.txt
+└─── fDNS                                       <--- (THIS REPOSITORY)
+   ├── README.md
+   ├── fDNS
+   │  ├── FMMiniPlugIn.rc
+   │  ├── FMMiniPlugIn.vcxproj
+   │  ├── FMMiniPlugIn.vcxproj.filters
+   │  ├── Info.plist
+   │  ├── fDNS.cpp
+   │  └── resource.h
+   ├── fDNS.xcodeproj
+   │  ...
+   └── fDNS_DemoFile.fmp12
+
+```
+If you want to make a version for Windows you can see MiniExample from FileMaker PlugInSDK. MiniExample contains needed project files for macOS and for Visual Studio.
 
 ## License
 
