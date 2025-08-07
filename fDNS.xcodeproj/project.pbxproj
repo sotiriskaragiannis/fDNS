@@ -365,6 +365,7 @@
 					"-weak_framework",
 					FMWrapper,
 					"-lcares",
+					"-lresolv",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.filemaker.$(TARGET_NAME)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -390,6 +391,7 @@
 					"-weak_framework",
 					FMWrapper,
 					"-lcares",
+					"-lresolv",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.filemaker.$(TARGET_NAME)";
 				PRODUCT_NAME = "$(TARGET_NAME)";

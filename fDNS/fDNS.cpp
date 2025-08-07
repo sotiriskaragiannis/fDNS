@@ -4,19 +4,20 @@
 //
 //  Author: Sotiris Karagiannis
 //
-//  v0.65
+//  v0.66
 //  Supported features:
 //      - fDNS_Resolve(hostname {; timeoutMs}): Resolves a hostname to an IPv4 address.
 //      - fDNS_Reverse(ipAddress {; timeoutMs}): Resolves an IPv4 address to a hostname.
+//      - fDNS_Resolve_Extended(hostname {; timeoutMs}): Returns all DNS records (A, AAAA, CNAME, MX, TXT, NS, SRV, PTR, etc.) for a hostname as a JSON string.
 //      - fDNS_Set_Server(dnsServer): Sets the DNS server to use for subsequent requests (empty string "" resets to system default).
 //      - fDNS_Get_Systems_Server(): Returns the system's DNS server(s).
 //      - fDNS_Get_Current_Server(): Returns the DNS server currently set in the plugin.
 //      - fDNS_Initialize() / DNS_Uninitialize(): Initialize and cleanup the DNS subsystem (should be called at plugin load/unload).
 //  Behavior:
-//      - 3 seconds is the default timeout for DNS_Resolve and DNS_Reverse if not specified.
+//      - 3 seconds is the default timeout for DNS_Resolve, DNS_Reverse, and DNS_Resolve_Extended if not specified.
 //      - If dnsServer is not specified or is empty (""), the system default DNS resolver is used.
 //      - When using the system default DNS, the plugin uses the OS system resolver (getaddrinfo/getnameinfo), which works reliably on macOS, Linux, and Windows.
-//      - When a custom DNS server is set, the plugin uses c-ares for DNS queries.
+//      - When a custom DNS server is set, the plugin uses c-ares for DNS queries, supporting all record types.
 //      - This hybrid approach ensures robust DNS resolution across platforms and avoids known c-ares/macOS issues.
 //
 
@@ -34,10 +35,23 @@
 #include <ares.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <arpa/nameser.h>
+#include <resolv.h>
 #include <sys/select.h>
 #include <unistd.h>
 
 #define DEFAULT_TIMEOUT 3000
+
+std::string DNSRecordsToJson(const std::string& hostname, const std::vector<std::pair<std::string, std::string>>& records)
+{
+	std::string json = "{\"hostname\":\"" + hostname + "\",\"records\":[";
+	for (size_t i = 0; i < records.size(); ++i) {
+		json += "{\"type\":\"" + records[i].first + "\",\"value\":\"" + records[i].second + "\"}";
+		if (i + 1 < records.size()) json += ",";
+	}
+	json += "]}";
+	return json;
+}
 
 
 std::string getString(const fmx::Text& text);
@@ -453,6 +467,209 @@ static FMX_PROC(fmx::errcode) fDNS_Reverse(short /*funcId*/, const fmx::ExprEnv&
 
 	return 0;
 }
+
+// DNS_Resolve_Extended: hostname, timeoutMs
+static FMX_PROC(fmx::errcode) fDNS_Resolve_Extended(short /*funcId*/, const fmx::ExprEnv& /*env*/, const fmx::DataVect& dataVect, fmx::Data& results)
+{
+	if (!g_dnsInitialized)
+		return 1;
+	if (dataVect.Size() < 1) return 956;
+
+	std::string hostname = getString(dataVect.At(0).GetAsText());
+	if (hostname.empty()) return 956;
+
+	int timeoutMs = DEFAULT_TIMEOUT;
+	if (dataVect.Size() > 1) {
+		timeoutMs = GetIntFromDataVect(dataVect, 1);
+		if (timeoutMs < 0) timeoutMs = DEFAULT_TIMEOUT;
+	}
+
+	std::string dnsServer;
+	{
+		std::lock_guard<std::mutex> lock(g_dnsMutex);
+		dnsServer = g_currentDnsServer;
+	}
+
+	std::vector<std::pair<std::string, std::string>> records;
+
+	if (dnsServer.empty()) {
+		// --- System resolver ---
+		// A records
+		struct hostent* he = gethostbyname(hostname.c_str());
+		if (he && he->h_addrtype == AF_INET) {
+			for (int i = 0; he->h_addr_list[i] != nullptr; ++i) {
+				char ip[INET_ADDRSTRLEN];
+				inet_ntop(AF_INET, he->h_addr_list[i], ip, sizeof(ip));
+				records.emplace_back("A", ip);
+			}
+		}
+		// AAAA records
+		struct addrinfo hints = {0}, *res = nullptr;
+		hints.ai_family = AF_INET6;
+		if (getaddrinfo(hostname.c_str(), nullptr, &hints, &res) == 0) {
+			for (struct addrinfo* p = res; p != nullptr; p = p->ai_next) {
+				char ip[INET6_ADDRSTRLEN];
+				inet_ntop(AF_INET6, &((struct sockaddr_in6*)p->ai_addr)->sin6_addr, ip, sizeof(ip));
+				records.emplace_back("AAAA", ip);
+			}
+			freeaddrinfo(res);
+		}
+		// CNAME (best effort)
+		if (he && he->h_name && strcmp(he->h_name, hostname.c_str()) != 0) {
+			records.emplace_back("CNAME", he->h_name);
+		}
+		// NOTE: System resolver does not provide MX, TXT, NS, etc.
+	} else {
+		// --- c-ares resolver ---
+		ares_channel channel;
+		struct ares_options options;
+		int optmask = 0;
+		memset(&options, 0, sizeof(options));
+		if (ares_init_options(&channel, &options, optmask) != ARES_SUCCESS)
+			return 1;
+		if (ares_set_servers_ports_csv(channel, dnsServer.c_str()) != ARES_SUCCESS) {
+			ares_destroy(channel);
+			return 1;
+		}
+
+		struct QueryType {
+			const char* type;
+			int dns_type;
+		};
+		QueryType queryTypes[] = {
+			{"A", ns_t_a},
+			{"AAAA", ns_t_aaaa},
+			{"CNAME", ns_t_cname},
+			{"MX", ns_t_mx},
+			{"TXT", ns_t_txt},
+			{"NS", ns_t_ns},
+			{"SRV", ns_t_srv},
+			{"PTR", ns_t_ptr}
+		};
+
+		struct CallbackData {
+			std::vector<std::pair<std::string, std::string>>* records;
+			std::string type;
+			bool done;
+		};
+
+		int outstanding = sizeof(queryTypes)/sizeof(QueryType);
+		std::vector<CallbackData> callbacks(outstanding);
+
+		auto callback = [](void* arg, int status, int timeouts, unsigned char* abuf, int alen) {
+			CallbackData* cb = static_cast<CallbackData*>(arg);
+			if (status == ARES_SUCCESS) {
+				// Parse DNS response
+				ns_msg handle;
+				if (ns_initparse(abuf, alen, &handle) == 0) {
+					int count = ns_msg_count(handle, ns_s_an);
+					for (int i = 0; i < count; ++i) {
+						ns_rr rr;
+						if (ns_parserr(&handle, ns_s_an, i, &rr) == 0) {
+							std::string value;
+							if (cb->type == "A" && ns_rr_type(rr) == ns_t_a) {
+								char ip[INET_ADDRSTRLEN];
+								inet_ntop(AF_INET, ns_rr_rdata(rr), ip, sizeof(ip));
+								value = ip;
+							} else if (cb->type == "AAAA" && ns_rr_type(rr) == ns_t_aaaa) {
+								char ip[INET6_ADDRSTRLEN];
+								inet_ntop(AF_INET6, ns_rr_rdata(rr), ip, sizeof(ip));
+								value = ip;
+							} else if (cb->type == "CNAME" && ns_rr_type(rr) == ns_t_cname) {
+								char cname[256];
+								dn_expand(abuf, abuf + alen, ns_rr_rdata(rr), cname, sizeof(cname));
+								value = cname;
+							} else if (cb->type == "MX" && ns_rr_type(rr) == ns_t_mx) {
+								uint16_t preference = (ns_rr_rdata(rr)[0] << 8) | ns_rr_rdata(rr)[1];
+								char mx[256];
+								dn_expand(abuf, abuf + alen, ns_rr_rdata(rr) + 2, mx, sizeof(mx));
+								value = std::to_string(preference) + " " + mx;
+							} else if (cb->type == "TXT" && ns_rr_type(rr) == ns_t_txt) {
+								const unsigned char* txt = ns_rr_rdata(rr);
+								int txt_len = *txt;
+								std::string txt_str(reinterpret_cast<const char*>(txt + 1), txt_len);
+								value = txt_str;
+							} else if (cb->type == "NS" && ns_rr_type(rr) == ns_t_ns) {
+								char nsdname[256];
+								dn_expand(abuf, abuf + alen, ns_rr_rdata(rr), nsdname, sizeof(nsdname));
+								value = nsdname;
+							} else if (cb->type == "SRV" && ns_rr_type(rr) == ns_t_srv) {
+								uint16_t priority = (ns_rr_rdata(rr)[0] << 8) | ns_rr_rdata(rr)[1];
+								uint16_t weight = (ns_rr_rdata(rr)[2] << 8) | ns_rr_rdata(rr)[3];
+								uint16_t port = (ns_rr_rdata(rr)[4] << 8) | ns_rr_rdata(rr)[5];
+								char target[256];
+								dn_expand(abuf, abuf + alen, ns_rr_rdata(rr) + 6, target, sizeof(target));
+								value = std::to_string(priority) + " " + std::to_string(weight) + " " + std::to_string(port) + " " + target;
+							} else if (cb->type == "PTR" && ns_rr_type(rr) == ns_t_ptr) {
+								char ptrdname[256];
+								dn_expand(abuf, abuf + alen, ns_rr_rdata(rr), ptrdname, sizeof(ptrdname));
+								value = ptrdname;
+							}
+							if (!value.empty())
+								cb->records->emplace_back(cb->type, value);
+						}
+					}
+				}
+			}
+			cb->done = true;
+		};
+
+		for (int i = 0; i < outstanding; ++i) {
+			callbacks[i].records = &records;
+			callbacks[i].type = queryTypes[i].type;
+			callbacks[i].done = false;
+			ares_query(channel, hostname.c_str(), ns_c_in, queryTypes[i].dns_type, callback, &callbacks[i]);
+		}
+
+		int totalWaitMs = 0;
+		while (true) {
+			bool all_done = true;
+			for (int i = 0; i < outstanding; ++i) {
+				if (!callbacks[i].done) {
+					all_done = false;
+					break;
+				}
+			}
+			if (all_done || totalWaitMs >= timeoutMs)
+				break;
+
+			fd_set read_fds, write_fds;
+			int nfds;
+			struct timeval tv, *tvp;
+
+			FD_ZERO(&read_fds);
+			FD_ZERO(&write_fds);
+			nfds = ares_fds(channel, &read_fds, &write_fds);
+			if (nfds == 0)
+				break;
+
+			tvp = ares_timeout(channel, nullptr, &tv);
+
+			int waitMs = (tvp->tv_sec * 1000) + (tvp->tv_usec / 1000);
+			if (waitMs > (timeoutMs - totalWaitMs))
+				waitMs = timeoutMs - totalWaitMs;
+
+			struct timeval tv_limit = { waitMs / 1000, (waitMs % 1000) * 1000 };
+
+			int waited = select(nfds, &read_fds, &write_fds, nullptr, &tv_limit);
+			if (waited >= 0) {
+				ares_process(channel, &read_fds, &write_fds);
+				totalWaitMs += waitMs;
+			} else {
+				break; // select error
+			}
+		}
+		ares_destroy(channel);
+	}
+
+	std::string jsonResult = DNSRecordsToJson(hostname, records);
+
+	fmx::TextUniquePtr outText;
+	outText->Assign(jsonResult.c_str(), fmx::Text::kEncoding_UTF8);
+	results.SetAsText(*outText, dataVect.At(0).GetLocale());
+
+	return 0;
+}
 // Registration Info =======================================================================
 
 static const char* kfDNS = "fDNS";
@@ -461,6 +678,7 @@ enum {
 	kfDNS_DNSResolveID = 300,
 	kfDNS_DNSSetServerID = 301,
 	kfDNS_DNSReverseID = 302,
+	kfDNS_DNSResolveExtendedID = 307,
 	kfDNS_DNSInitID = 303,
 	kfDNS_DNSUninitID = 304,
 	kfDNS_DNSGetSysServerID = 305,
@@ -470,6 +688,10 @@ enum {
 static const char* kfDNS_DNSResolveName = "fDNS_Resolve";
 static const char* kfDNS_DNSResolveDefinition = "fDNS_Resolve(hostname {; timeoutMs})";
 static const char* kfDNS_DNSResolveDescription = "Resolves a hostname to an IPv4 address using the current DNS server";
+
+static const char* kfDNS_DNSResolveExtendedName = "fDNS_Resolve_Extended";
+static const char* kfDNS_DNSResolveExtendedDefinition = "fDNS_Resolve_Extended(hostname {; timeoutMs})";
+static const char* kfDNS_DNSResolveExtendedDescription = "Resolves a hostname to all DNS records (A, AAAA, etc.) and returns a JSON string";
 
 static const char* kfDNS_DNSSetServerName = "fDNS_Set_Server";
 static const char* kfDNS_DNSSetServerDefinition = "fDNS_Set_Server(dnsServer)";
@@ -573,6 +795,11 @@ static fmx::ptrtype Do_PluginInit(fmx::int16 version)
 		description->Assign(kfDNS_DNSReverseDescription, fmx::Text::kEncoding_UTF8);
 		ok &= (fmx::ExprEnv::RegisterExternalFunctionEx(*pluginID, kfDNS_DNSReverseID, *name, *definition, *description, 1, 2, flags, fDNS_Reverse) == 0);
 
+		name->Assign(kfDNS_DNSResolveExtendedName, fmx::Text::kEncoding_UTF8);
+		definition->Assign(kfDNS_DNSResolveExtendedDefinition, fmx::Text::kEncoding_UTF8);
+		description->Assign(kfDNS_DNSResolveExtendedDescription, fmx::Text::kEncoding_UTF8);
+		ok &= (fmx::ExprEnv::RegisterExternalFunctionEx(*pluginID, kfDNS_DNSResolveExtendedID, *name, *definition, *description, 1, 2, flags, fDNS_Resolve_Extended) == 0);
+
 		name->Assign(kfDNS_DNSGetSysServerName, fmx::Text::kEncoding_UTF8);
 		definition->Assign(kfDNS_DNSGetSysServerDefinition, fmx::Text::kEncoding_UTF8);
 		description->Assign(kfDNS_DNSGetSysServerDescription, fmx::Text::kEncoding_UTF8);
@@ -605,6 +832,7 @@ static void Do_PluginShutdown(fmx::int16 version)
 		fmx::ExprEnv::UnRegisterExternalFunction(*pluginID, kfDNS_DNSReverseID);
 		fmx::ExprEnv::UnRegisterExternalFunction(*pluginID, kfDNS_DNSGetSysServerID);
 		fmx::ExprEnv::UnRegisterExternalFunction(*pluginID, kfDNS_DNSGetCurServerID);
+		fmx::ExprEnv::UnRegisterExternalFunction(*pluginID, kfDNS_DNSResolveExtendedID);
 	}
 }
 

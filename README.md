@@ -8,6 +8,10 @@ A cross-platform DNS plugin for FileMaker Pro, providing DNS resolution and reve
   `fDNS_Resolve(hostname {; timeoutMs})`
   Resolves a hostname to an IPv4 address.
 
+- **Extended DNS Record Query**
+  `fDNS_Resolve_Extended(hostname {; timeoutMs})`
+  Resolves a hostname to all available DNS records (A, AAAA, CNAME, MX, TXT, NS, SRV, PTR, etc.) and returns a JSON string with all results.
+
 - **Reverse DNS Lookup**
   `fDNS_Reverse(ipAddress {; timeoutMs})`
   Resolves an IPv4 address to its hostname.
@@ -52,6 +56,30 @@ Download the plugin from the latest release
 ## Usage
 
 Call the plugin functions from FileMaker calculations or scripts. See the `fDNS_DemoFile.fmp12`
+
+### Example: Extended DNS Query
+
+```filemaker
+fDNS_Resolve_Extended("example.com"; 3000)
+```
+
+Returns a JSON string with all DNS records for the hostname.  
+If there are multiple records of the same type (e.g. multiple A or MX records), each will appear as a separate object in the "records" array. For example:
+
+```json
+{
+  "hostname": "example.com",
+  "records": [
+    {"type": "A", "value": "93.184.216.34"},
+    {"type": "AAAA", "value": "2606:2800:220:1:248:1893:25c8:1946"},
+    {"type": "MX", "value": "10 mail.example.com"},
+    {"type": "TXT", "value": "v=spf1 ..."},
+    {"type": "NS", "value": "ns1.example.com"},
+    {"type": "CNAME", "value": "alias.example.com"},
+    ...
+  ]
+}
+```
 
 
 ## License
