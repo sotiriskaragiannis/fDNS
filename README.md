@@ -1,6 +1,6 @@
 # FileMaker DNS Plugin (`fDNS`)
 
-A cross-platform DNS plugin for FileMaker Pro, providing DNS resolution and reverse lookup capabilities. This plugin is built using the FileMaker PluginSDK (using the FMWrapper) and is currently supported for macOS (Xcode project).
+A DNS plugin for FileMaker Pro, providing DNS resolution and reverse lookup capabilities. This plugin is built using the FileMaker PluginSDK (using the FMWrapper) and is currently supported for macOS (Xcode project).
 
 ## Features
 
